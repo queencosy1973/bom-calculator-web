@@ -294,20 +294,50 @@
   // Setup Event Listeners
   function setupEventListeners() {
     // 1. Download Template Button
-    $('btn-download-template').addEventListener('click', () => {
-      window.TemplateExport.downloadProductionTemplate(state.masterBomData);
-    });
+    const btnDownloadTemplate = $('btn-download-template');
+    if (btnDownloadTemplate) {
+      btnDownloadTemplate.addEventListener('click', () => {
+        if (!window.TemplateExport || !window.TemplateExport.downloadProductionTemplate) {
+          alert('ไลบรารีส่งออกยังโหลดไม่เสร็จ กรุณารอสักครู่แล้วลองใหม่ครับ');
+          return;
+        }
+        window.TemplateExport.downloadProductionTemplate(state.masterBomData);
+        showToast('📥 ดาวน์โหลดแบบฟอร์มแผนผลิต (.xlsx) สำเร็จ', '📋');
+      });
+    }
 
     // 2. Export Buttons
-    $('btn-export-picking').addEventListener('click', () => {
-      if (!state.calculationResult) return;
-      window.TemplateExport.exportPickingList(state.calculationResult);
-    });
+    const btnExportPicking = $('btn-export-picking');
+    if (btnExportPicking) {
+      btnExportPicking.addEventListener('click', () => {
+        if (!state.calculationResult || !state.plannedItems || state.plannedItems.length === 0) {
+          alert('⚠️ ยังไม่มีรายการสินค้าในแผนการผลิต กรุณาเพิ่มรายการสินค้า หรือกดปุ่ม "โหลดข้อมูลจำลองทดสอบ" ก่อนดาวน์โหลดใบเบิกครับ');
+          return;
+        }
+        if (!window.TemplateExport || !window.TemplateExport.exportPickingList) {
+          alert('ไลบรารีส่งออกยังโหลดไม่เสร็จ กรุณารอสักครู่แล้วลองใหม่ครับ');
+          return;
+        }
+        window.TemplateExport.exportPickingList(state.calculationResult);
+        showToast('📥 ดาวน์โหลดใบเบิกวัตถุดิบ (Excel) สำเร็จ', '📊');
+      });
+    }
 
-    $('btn-export-po').addEventListener('click', () => {
-      if (!state.calculationResult) return;
-      window.TemplateExport.exportPurchaseOrder(state.calculationResult);
-    });
+    const btnExportPo = $('btn-export-po');
+    if (btnExportPo) {
+      btnExportPo.addEventListener('click', () => {
+        if (!state.calculationResult || !state.plannedItems || state.plannedItems.length === 0) {
+          alert('⚠️ ยังไม่มีรายการสินค้าในแผนการผลิต กรุณาเพิ่มรายการสินค้า หรือกดปุ่ม "โหลดข้อมูลจำลองทดสอบ" ก่อนดาวน์โหลดใบสั่งซื้อ PO ครับ');
+          return;
+        }
+        if (!window.TemplateExport || !window.TemplateExport.exportPurchaseOrder) {
+          alert('ไลบรารีส่งออกยังโหลดไม่เสร็จ กรุณารอสักครู่แล้วลองใหม่ครับ');
+          return;
+        }
+        window.TemplateExport.exportPurchaseOrder(state.calculationResult);
+        showToast('📥 ดาวน์โหลดใบสั่งซื้อ PO (Excel) สำเร็จ', '🛒');
+      });
+    }
 
     // Price Master Export & Import
     const btnExportPrices = $('btn-export-prices-excel');
@@ -346,11 +376,16 @@
     const btnExportFull = $('btn-export-full-calc');
     if (btnExportFull) {
       btnExportFull.addEventListener('click', () => {
-        if (!state.calculationResult) {
-          alert('⚠️ ยังไม่มีข้อมูลการคำนวณ กรุณาอัปโหลดหรือระบุจำนวนสินค้าก่อนครับ');
+        if (!state.calculationResult || !state.plannedItems || state.plannedItems.length === 0) {
+          alert('⚠️ ยังไม่มีข้อมูลแผนการผลิต กรุณาอัปโหลดหรือระบุจำนวนสินค้าก่อนส่งออกใบสั่งซื้อครับ');
+          return;
+        }
+        if (!window.TemplateExport || !window.TemplateExport.exportFullCalculationExcel) {
+          alert('ไลบรารีส่งออกยังโหลดไม่เสร็จ กรุณารอสักครู่แล้วลองใหม่ครับ');
           return;
         }
         window.TemplateExport.exportFullCalculationExcel(state.calculationResult, state.plannedItems, state.materialPriceMap);
+        showToast('📥 ส่งออกใบสั่งซื้อครบชุด (Excel) สำเร็จ', '📑');
       });
     }
 

@@ -376,6 +376,9 @@
       return { success: false, error: 'ไม่พบข้อมูลราคาที่ถูกต้องในไฟล์' };
     }
 
+    return { success: true, count, prices };
+  }
+
   // 4. Export Full Procurement & BOM Calculation Excel
   function exportFullCalculationExcel(calcResult, plannedItems, priceMap) {
     if (!calcResult || typeof XLSX === 'undefined') {
