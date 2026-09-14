@@ -76,7 +76,10 @@
     planSearchQuery: '',
     catalogSearchQuery: '',
     priceSearchQuery: '',
-    unmatchedList: []
+    unmatchedList: [],
+    savedPlans: [],
+    activePlanId: null,
+    activePlanName: null
   };
 
   // Editing state for Modal
@@ -120,6 +123,9 @@
     renderCatalog();
     renderPricesTable();
     recalculate();
+
+    // 8. Connect to Supabase Cloud Database & Realtime Sync
+    initCloudSync();
   }
 
   // Load Master BOM (Local Storage or Baseline)
@@ -184,9 +190,22 @@
     });
   }
 
-  // Save Stock On Hand to localStorage
+  // Save Stock On Hand to localStorage & Supabase
   function saveStockOnHand() {
     localStorage.setItem(STORAGE_STOCK_KEY, JSON.stringify(state.stockOnHandMap));
+
+    // Sync to Supabase cloud in background
+    if (window.DbService && window.DbService.isOnline && state.masterBomData) {
+      const list = state.masterBomData.materials.map(m => ({
+        name: m.name,
+        category: m.category,
+        unit: m.unit,
+        unitPrice: state.materialPriceMap[m.name] !== undefined ? state.materialPriceMap[m.name] : (DEFAULT_MATERIAL_PRICES[m.name] || 0),
+        currentStock: (state.stockOnHandMap[m.name] && state.stockOnHandMap[m.name].currentStock) || 0,
+        wastePercent: (state.stockOnHandMap[m.name] && state.stockOnHandMap[m.name].wastePercent) || 0
+      }));
+      window.DbService.batchSaveMaterialPrices(list);
+    }
   }
 
   // Initialize Material Prices (from LocalStorage or Default Benchmark)
@@ -211,7 +230,7 @@
     updatePricesStatusTag(!!saved);
   }
 
-  // Save Material Prices to localStorage
+  // Save Material Prices to localStorage & Supabase
   function saveMaterialPrices(showNotification = false) {
     localStorage.setItem(STORAGE_PRICES_KEY, JSON.stringify(state.materialPriceMap));
     updatePricesStatusTag(true);
@@ -220,6 +239,23 @@
     }
     recalculate();
     renderPricesTable();
+
+    // Sync to Supabase cloud in background
+    if (window.DbService && window.DbService.isOnline && state.masterBomData) {
+      const list = state.masterBomData.materials.map(m => ({
+        name: m.name,
+        category: m.category,
+        unit: m.unit,
+        unitPrice: state.materialPriceMap[m.name] !== undefined ? state.materialPriceMap[m.name] : (DEFAULT_MATERIAL_PRICES[m.name] || 0),
+        currentStock: (state.stockOnHandMap[m.name] && state.stockOnHandMap[m.name].currentStock) || 0,
+        wastePercent: (state.stockOnHandMap[m.name] && state.stockOnHandMap[m.name].wastePercent) || 0
+      }));
+      window.DbService.batchSaveMaterialPrices(list).then(ok => {
+        if (ok && showNotification) {
+          showToast('☁️ ซิงค์ราคาขึ้นฐานข้อมูลกลาง Supabase เรียบร้อย');
+        }
+      });
+    }
   }
 
   // Reset Material Prices to Defaults
@@ -315,6 +351,58 @@
           return;
         }
         window.TemplateExport.exportFullCalculationExcel(state.calculationResult, state.plannedItems, state.materialPriceMap);
+      });
+    }
+
+    // 4.2 Saved Plans Modal & Cloud Save
+    const btnOpenSaved = $('btn-open-saved-plans');
+    if (btnOpenSaved) {
+      btnOpenSaved.addEventListener('click', openSavedPlansModal);
+    }
+
+    const btnSavePlan = $('btn-save-plan-modal');
+    if (btnSavePlan) {
+      btnSavePlan.addEventListener('click', openSavePlanModal);
+    }
+
+    const btnCloseSaveModal = $('btn-modal-save-plan-close');
+    if (btnCloseSaveModal) {
+      btnCloseSaveModal.addEventListener('click', () => $('modal-save-plan').classList.add('hidden'));
+    }
+
+    const btnCancelSaveModal = $('btn-modal-save-plan-cancel');
+    if (btnCancelSaveModal) {
+      btnCancelSaveModal.addEventListener('click', () => $('modal-save-plan').classList.add('hidden'));
+    }
+
+    const btnConfirmSaveModal = $('btn-modal-save-plan-confirm');
+    if (btnConfirmSaveModal) {
+      btnConfirmSaveModal.addEventListener('click', confirmSavePlan);
+    }
+
+    const btnCloseSavedPlans = $('btn-modal-saved-plans-close');
+    if (btnCloseSavedPlans) {
+      btnCloseSavedPlans.addEventListener('click', () => $('modal-saved-plans').classList.add('hidden'));
+    }
+
+    const btnFooterCloseSavedPlans = $('btn-modal-saved-plans-footer-close');
+    if (btnFooterCloseSavedPlans) {
+      btnFooterCloseSavedPlans.addEventListener('click', () => $('modal-saved-plans').classList.add('hidden'));
+    }
+
+    const searchSavedPlans = $('filter-saved-plans-search');
+    if (searchSavedPlans) {
+      searchSavedPlans.addEventListener('input', renderSavedPlansList);
+    }
+
+    const cloudBadge = $('cloud-status-badge');
+    if (cloudBadge) {
+      cloudBadge.addEventListener('click', () => {
+        if (!window.DbService || !window.DbService.isOnline) {
+          initCloudSync();
+        } else {
+          showToast('🟢 คลาวด์ออนไลน์: กำลังแชร์ฐานข้อมูลกลาง Supabase ร่วมกันแบบ Real-time');
+        }
       });
     }
 
@@ -1263,6 +1351,12 @@
     }
 
     saveMasterBom(true);
+
+    // Sync custom recipe to Supabase cloud
+    if (window.DbService && window.DbService.isOnline && cleanMaterials) {
+      window.DbService.saveCustomRecipe(skuName, cleanMaterials);
+    }
+
     closeEditBomModal();
   }
 
@@ -1323,12 +1417,414 @@
     }, 2500);
   }
 
-  // Export state to window for testability
+  // ==========================================
+  // Cloud Database & Saved Plans Integration
+  // ==========================================
+
+  // Initialize Cloud Database Sync
+  async function initCloudSync() {
+    updateCloudStatusBadge('connecting', 'กำลังเชื่อมต่อคลาวด์...');
+
+    if (!window.DbService) {
+      updateCloudStatusBadge('offline', 'ยังไม่พบ DbService');
+      return;
+    }
+
+    window.DbService.onStatusChange((status, msg) => {
+      updateCloudStatusBadge(status, msg);
+    });
+
+    const isConnected = await window.DbService.init();
+    if (isConnected) {
+      // 1. Fetch shared material prices & stock from Supabase
+      const cloudPrices = await window.DbService.fetchMaterialPrices();
+      if (cloudPrices && Object.keys(cloudPrices).length > 0) {
+        let priceChanged = false;
+        let stockChanged = false;
+
+        Object.keys(cloudPrices).forEach(matName => {
+          const cloudItem = cloudPrices[matName];
+          if (cloudItem.unitPrice !== undefined && !isNaN(cloudItem.unitPrice)) {
+            state.materialPriceMap[matName] = cloudItem.unitPrice;
+            priceChanged = true;
+          }
+          if (cloudItem.currentStock !== undefined || cloudItem.wastePercent !== undefined) {
+            if (!state.stockOnHandMap[matName]) {
+              state.stockOnHandMap[matName] = { currentStock: 0, wastePercent: 0 };
+            }
+            state.stockOnHandMap[matName].currentStock = cloudItem.currentStock || 0;
+            state.stockOnHandMap[matName].wastePercent = cloudItem.wastePercent || 0;
+            stockChanged = true;
+          }
+        });
+
+        if (priceChanged) {
+          localStorage.setItem(STORAGE_PRICES_KEY, JSON.stringify(state.materialPriceMap));
+          renderPricesTable();
+        }
+        if (stockChanged) {
+          localStorage.setItem(STORAGE_STOCK_KEY, JSON.stringify(state.stockOnHandMap));
+        }
+        recalculate();
+      }
+
+      // 2. Fetch custom recipes from Supabase
+      const cloudRecipes = await window.DbService.fetchCustomRecipes();
+      if (cloudRecipes && Object.keys(cloudRecipes).length > 0) {
+        let recipeChanged = false;
+        Object.keys(cloudRecipes).forEach(skuKey => {
+          const existing = state.masterBomData.skus.find(s => s.sku === skuKey);
+          if (existing) {
+            existing.materials = cloudRecipes[skuKey];
+          } else {
+            state.masterBomData.skus.push({ sku: skuKey, materials: cloudRecipes[skuKey] });
+          }
+          recipeChanged = true;
+        });
+
+        if (recipeChanged) {
+          localStorage.setItem(STORAGE_BOM_KEY, JSON.stringify(state.masterBomData));
+          window.SkuMapper.initSkuIndex(state.masterBomData);
+          updateBomStatusTag(true);
+          renderCatalog();
+          recalculate();
+        }
+      }
+
+      // 3. Setup Realtime Listeners
+      setupRealtimeHandlers();
+    }
+
+    // Always update saved plans count badge
+    updateSavedPlansBadge();
+  }
+
+  // Setup Realtime Event Handlers for instant cross-device updates
+  function setupRealtimeHandlers() {
+    if (!window.DbService) return;
+
+    // Price or Stock changed remotely
+    window.DbService.subscribeRealtime('onPriceChange', (payload) => {
+      const record = payload.new;
+      if (!record || !record.material_name) return;
+      const matName = record.material_name;
+
+      if (record.unit_price !== undefined) {
+        state.materialPriceMap[matName] = Number(record.unit_price) || 0;
+      }
+      if (record.current_stock !== undefined || record.waste_percent !== undefined) {
+        if (!state.stockOnHandMap[matName]) {
+          state.stockOnHandMap[matName] = { currentStock: 0, wastePercent: 0 };
+        }
+        state.stockOnHandMap[matName].currentStock = Number(record.current_stock) || 0;
+        state.stockOnHandMap[matName].wastePercent = Number(record.waste_percent) || 0;
+      }
+
+      localStorage.setItem(STORAGE_PRICES_KEY, JSON.stringify(state.materialPriceMap));
+      localStorage.setItem(STORAGE_STOCK_KEY, JSON.stringify(state.stockOnHandMap));
+      renderPricesTable();
+      recalculate();
+      showToast(`🔄 อัปเดตข้อมูลวัสดุ "${matName}" จากผู้ใช้อื่นแล้ว`);
+    });
+
+    // Saved Plan changed remotely
+    window.DbService.subscribeRealtime('onPlanChange', () => {
+      updateSavedPlansBadge();
+      const modal = $('modal-saved-plans');
+      if (modal && !modal.classList.contains('hidden')) {
+        renderSavedPlansList();
+      }
+      showToast('🔄 มีการอัปเดตแผนสั่งซื้อจากผู้ใช้อื่น');
+    });
+
+    // Custom Recipe changed remotely
+    window.DbService.subscribeRealtime('onRecipeChange', (payload) => {
+      const record = payload.new;
+      if (!record || !record.sku) return;
+      const existing = state.masterBomData.skus.find(s => s.sku === record.sku);
+      if (existing) {
+        existing.materials = record.materials_json || {};
+      } else {
+        state.masterBomData.skus.push({ sku: record.sku, materials: record.materials_json || {} });
+      }
+      localStorage.setItem(STORAGE_BOM_KEY, JSON.stringify(state.masterBomData));
+      window.SkuMapper.initSkuIndex(state.masterBomData);
+      renderCatalog();
+      recalculate();
+      showToast(`🔄 สูตรของรุ่น "${record.sku}" มีการอัปเดตจากผู้ใช้อื่น`);
+    });
+  }
+
+  // Update Cloud Status Badge in Header
+  function updateCloudStatusBadge(status, message) {
+    const badge = $('cloud-status-badge');
+    const dot = $('cloud-status-dot');
+    const text = $('cloud-status-text');
+    if (!badge || !dot || !text) return;
+
+    if (status === 'online') {
+      badge.className = 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-300 transition-all shadow-sm cursor-pointer';
+      dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+      text.textContent = '🟢 คลาวด์ออนไลน์ (ฐานข้อมูลกลาง)';
+      badge.title = 'เชื่อมต่อฐานข้อมูลกลาง Supabase สำเร็จ ทุกคนใช้ข้อมูลราคา สต็อก และแผนร่วมกัน';
+    } else if (status === 'connecting') {
+      badge.className = 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-300 transition-all shadow-sm cursor-pointer';
+      dot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+      text.textContent = '🟡 กำลังเชื่อมต่อ...';
+      badge.title = message || 'กำลังตรวจสอบฐานข้อมูลกลาง';
+    } else {
+      badge.className = 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-300 transition-all shadow-sm cursor-pointer';
+      dot.className = 'w-2 h-2 rounded-full bg-slate-400';
+      text.textContent = '⚪ ออฟไลน์ (LocalStorage)';
+      badge.title = (message || 'ออฟไลน์') + ' - คลิกเพื่อลองเชื่อมต่อใหม่';
+    }
+  }
+
+  // Update Saved Plans Badge Count in Header
+  async function updateSavedPlansBadge() {
+    if (!window.DbService) return;
+    const plans = await window.DbService.fetchSavedPlans();
+    state.savedPlans = plans || [];
+    const countEl = $('badge-saved-plans-count');
+    if (countEl) countEl.textContent = state.savedPlans.length;
+  }
+
+  // Open Save Plan Modal
+  function openSavePlanModal() {
+    if (!state.plannedItems || state.plannedItems.length === 0) {
+      alert('⚠️ ไม่มีรายการในแผนผลิต กรุณาเพิ่มรายการหรืออัปโหลดไฟล์ก่อนบันทึก');
+      return;
+    }
+
+    const totalUnits = state.plannedItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
+    const poCost = state.calculationResult ? state.calculationResult.totalShortageCost : 0;
+
+    $('modal-save-skus-count').textContent = `${state.plannedItems.length} รุ่น`;
+    $('modal-save-units-count').textContent = `${window.BomCalculator.formatNum(totalUnits, 0)} ชิ้น`;
+    $('modal-save-po-cost').textContent = `${window.BomCalculator.formatMoney(poCost)} ฿`;
+
+    const now = new Date();
+    const todayStr = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`;
+    $('modal-save-plan-name').value = state.activePlanName || `แผนสั่งซื้อ ${todayStr} (${state.plannedItems.length} รุ่น, ${totalUnits} ชิ้น)`;
+
+    $('modal-save-plan').classList.remove('hidden');
+    $('modal-save-plan-name').focus();
+  }
+
+  // Confirm Save Plan to Supabase
+  async function confirmSavePlan() {
+    const planName = ($('modal-save-plan-name').value || '').trim();
+    if (!planName) {
+      alert('กรุณากรอกชื่อแผนคำนวณ');
+      $('modal-save-plan-name').focus();
+      return;
+    }
+
+    const creator = ($('modal-save-plan-creator').value || 'แอดมินจัดซื้อ').trim();
+    const notes = ($('modal-save-plan-notes').value || '').trim();
+
+    const totalUnits = state.plannedItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
+    const totalMatCost = state.calculationResult ? state.calculationResult.totalMaterialCost : 0;
+    const totalPoCost = state.calculationResult ? state.calculationResult.totalShortageCost : 0;
+
+    const btn = $('btn-modal-save-plan-confirm');
+    btn.disabled = true;
+    btn.textContent = 'กำลังบันทึก...';
+
+    const planData = {
+      planId: state.activePlanId || undefined,
+      planName,
+      totalSkus: state.plannedItems.length,
+      totalUnits,
+      totalMaterialCost: totalMatCost,
+      totalPoCost: totalPoCost,
+      items: state.plannedItems,
+      summary: {
+        totalSkus: state.plannedItems.length,
+        totalUnits,
+        totalMaterialCost: totalMatCost,
+        totalPoCost: totalPoCost,
+        activeMaterialsCount: state.calculationResult ? state.calculationResult.activeMaterialsCount : 0,
+        shortageCount: state.calculationResult ? state.calculationResult.shortageCount : 0
+      },
+      createdBy: creator,
+      notes
+    };
+
+    const res = await window.DbService.savePlan(planData);
+    btn.disabled = false;
+    btn.textContent = '💾 บันทึกลงฐานข้อมูลกลาง';
+
+    if (res.success) {
+      state.activePlanId = res.planId;
+      state.activePlanName = planName;
+      $('modal-save-plan').classList.add('hidden');
+      showToast(`💾 บันทึกแผน "${planName}" สำเร็จ (${res.offline ? 'ออฟไลน์' : 'บนคลาวด์'})`);
+      updateSavedPlansBadge();
+    } else {
+      alert('บันทึกแผนไม่สำเร็จ: ' + (res.error || 'กรุณาลองใหม่อีกครั้ง'));
+    }
+  }
+
+  // Open Saved Plans List Modal
+  async function openSavedPlansModal() {
+    $('modal-saved-plans').classList.remove('hidden');
+    await renderSavedPlansList();
+  }
+
+  // Render Saved Plans List in Modal
+  async function renderSavedPlansList() {
+    const container = $('saved-plans-container');
+    if (!container) return;
+
+    container.innerHTML = '<div class="text-center py-8 text-slate-400">กำลังโหลดแผนสั่งซื้อ...</div>';
+
+    const plans = await window.DbService.fetchSavedPlans();
+    state.savedPlans = plans || [];
+
+    const query = ($('filter-saved-plans-search').value || '').toLowerCase().trim();
+    const filtered = state.savedPlans.filter(p => {
+      if (!query) return true;
+      return (p.plan_name && p.plan_name.toLowerCase().includes(query)) ||
+             (p.plan_id && p.plan_id.toLowerCase().includes(query)) ||
+             (p.created_by && p.created_by.toLowerCase().includes(query));
+    });
+
+    $('saved-plans-display-count').textContent = filtered.length;
+    const badge = $('badge-saved-plans-count');
+    if (badge) badge.textContent = state.savedPlans.length;
+
+    if (filtered.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-12 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+          <svg class="w-12 h-12 mx-auto text-slate-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+          </svg>
+          <p class="font-medium">ยังไม่มีแผนคำนวณที่บันทึกไว้</p>
+          <p class="text-xs text-slate-400 mt-1">สามารถคำนวณรายการผลิต แล้วกดปุ่ม "💾 บันทึกแผนคำนวณ" ในแท็บที่ 1</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = filtered.map(p => {
+      const createdDate = p.created_at ? new Date(p.created_at).toLocaleString('th-TH', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      }) : '-';
+
+      const isCurrentActive = state.activePlanId === p.plan_id;
+
+      return `
+        <div class="bg-white border ${isCurrentActive ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'} rounded-xl p-4 shadow-sm hover:shadow-md transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div class="space-y-1 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs font-mono font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">${p.plan_id}</span>
+              <h4 class="font-bold text-sm text-slate-900">${p.plan_name}</h4>
+              ${isCurrentActive ? '<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-100 text-blue-700">กำลังเปิดอยู่</span>' : ''}
+            </div>
+            <div class="flex items-center gap-4 text-xs text-slate-500 flex-wrap">
+              <span>📅 บันทึกเมื่อ: <strong class="text-slate-700">${createdDate}</strong></span>
+              <span>👤 โดย: <strong class="text-slate-700">${p.created_by || 'Admin'}</strong></span>
+              ${p.notes ? `<span>📝 <em>${p.notes}</em></span>` : ''}
+            </div>
+            <div class="flex items-center gap-3 pt-1 text-xs">
+              <span class="font-semibold text-slate-700 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">📦 ${p.total_skus || 0} รุ่น (${window.BomCalculator.formatNum(p.total_units || 0, 0)} ตัว)</span>
+              <span class="font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">💰 ต้นทุนวัสดุ: ${window.BomCalculator.formatMoney(p.total_material_cost || 0)} ฿</span>
+              <span class="font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">🛒 งบสั่งซื้อ PO: ${window.BomCalculator.formatMoney(p.total_po_cost || 0)} ฿</span>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 self-end md:self-center">
+            <button data-plan-id="${p.plan_id}" class="btn-load-saved-plan px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition-all flex items-center gap-1.5 cursor-pointer">
+              <span>📥 โหลดแผนนี้</span>
+            </button>
+            <button data-plan-id="${p.plan_id}" data-plan-name="${p.plan_name}" class="btn-delete-saved-plan p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors" title="ลบแผนนี้">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Attach click events
+    container.querySelectorAll('.btn-load-saved-plan').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const planId = btn.getAttribute('data-plan-id');
+        loadSavedPlan(planId);
+      });
+    });
+
+    container.querySelectorAll('.btn-delete-saved-plan').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const planId = btn.getAttribute('data-plan-id');
+        const planName = btn.getAttribute('data-plan-name');
+        if (confirm(`คุณต้องการลบแผน "${planName}" (${planId}) ใช่หรือไม่? ข้อมูลจะถูกลบออกจากฐานข้อมูลกลาง`)) {
+          const ok = await window.DbService.deletePlan(planId);
+          if (ok) {
+            showToast(`🗑️ ลบแผน "${planName}" สำเร็จ`);
+            renderSavedPlansList();
+            updateSavedPlansBadge();
+          } else {
+            alert('ลบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+          }
+        }
+      });
+    });
+  }
+
+  // Load a Saved Plan into workspace and recalculate
+  async function loadSavedPlan(planId) {
+    let plan = state.savedPlans.find(p => p.plan_id === planId);
+    if (!plan && window.DbService) {
+      const allPlans = await window.DbService.fetchSavedPlans();
+      state.savedPlans = allPlans || [];
+      plan = state.savedPlans.find(p => p.plan_id === planId);
+    }
+    if (!plan) return false;
+
+    state.plannedItems = JSON.parse(JSON.stringify(plan.items_json || []));
+    state.activePlanId = plan.plan_id;
+    state.activePlanName = plan.plan_name;
+
+    // Close modal
+    const modal = $('modal-saved-plans');
+    if (modal) modal.classList.add('hidden');
+
+    // Show banner
+    const banner = $('file-status-banner');
+    if (banner) {
+      banner.classList.remove('hidden');
+      $('banner-file-name').textContent = `แผนที่โหลด: ${plan.plan_name} (${plan.plan_id})`;
+      $('banner-file-type').textContent = 'แผนจากฐานข้อมูลกลาง';
+      $('banner-file-stats').textContent = `${plan.total_skus} รุ่น รวมทั้งสิ้น ${window.BomCalculator.formatNum(plan.total_units, 0)} ชิ้น (บันทึกโดย: ${plan.created_by || 'Admin'})`;
+      $('banner-unmatched-wrapper').classList.add('hidden');
+    }
+
+    // Switch to Tab 1
+    switchTab('tab-plan');
+
+    // Recalculate everything with latest prices & stock
+    recalculate();
+
+    showToast(`📥 โหลดแผน "${plan.plan_name}" สำเร็จ (${state.plannedItems.length} รุ่น)`);
+    return true;
+  }
+
+  // Export state & methods to window for testability
   window.App = {
     state,
     saveMasterBom,
     openEditBomModal,
-    recalculate
+    recalculate,
+    initCloudSync,
+    openSavePlanModal,
+    confirmSavePlan,
+    openSavedPlansModal,
+    renderSavedPlansList,
+    loadSavedPlan
   };
 
   // DOM Ready
