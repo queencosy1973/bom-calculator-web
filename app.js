@@ -10,6 +10,11 @@
   const STORAGE_STOCK_KEY = 'qc_stock_on_hand_v2';
   const STORAGE_PRICES_KEY = 'qc_material_prices_v2';
 
+  // Google Sheet Direct Sync Defaults (stock tab gid=1603986714)
+  const DEFAULT_BOM_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1BrjQw-L9GNbYPd1GhPRSKMugFAVE0BL0JMgxooTC4aE/edit?gid=1603986714#gid=1603986714';
+  const STORAGE_BOM_SHEET_URL_KEY = 'qc_bom_google_sheet_url';
+  const STORAGE_BOM_LAST_SYNC_KEY = 'qc_bom_last_sync';
+
   // Baseline Default Material Prices (THB per Unit)
   const DEFAULT_MATERIAL_PRICES = {
     // โครงสร้างไม้ (wood)
@@ -126,10 +131,24 @@
 
     // 8. Connect to Supabase Cloud Database & Realtime Sync
     initCloudSync();
+
+    // 9. Check last sync time & auto background sync from Google Sheet
+    updateSheetSyncBadge('default');
+    setTimeout(() => {
+      if (navigator.onLine) {
+        syncMasterBomFromGoogleSheet(true);
+      }
+    }, 1500);
   }
 
   // Load Master BOM (Local Storage or Baseline)
   function loadMasterBom() {
+    const BOM_CACHE_VER = '20260923_v3';
+    if (localStorage.getItem('qc_bom_cache_ver') !== BOM_CACHE_VER) {
+      localStorage.removeItem(STORAGE_BOM_KEY);
+      localStorage.setItem('qc_bom_cache_ver', BOM_CACHE_VER);
+    }
+
     const saved = localStorage.getItem(STORAGE_BOM_KEY);
     if (saved) {
       try {
@@ -164,13 +183,316 @@
   function updateBomStatusTag(isCustom) {
     const tag = $('bom-status-tag');
     if (!tag) return;
+    const count = state.masterBomData ? state.masterBomData.skus.length : 0;
     if (isCustom) {
-      tag.textContent = '✏️ มีการแก้ไขสูตร (บันทึกลงเครื่องแล้ว)';
+      tag.textContent = `✏️ มีการแก้ไข/ซิงค์สูตร (${count} รุ่น)`;
       tag.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-50 text-amber-800 border border-amber-200';
     } else {
-      tag.textContent = '● ข้อมูลมาตรฐานโรงงาน (423 รุ่น)';
+      tag.textContent = `● ข้อมูลมาตรฐานโรงงาน (${count} รุ่น)`;
       tag.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-emerald-50 text-emerald-700 border border-emerald-200';
     }
+    const badge = $('badge-tab-catalog-count');
+    if (badge) badge.textContent = count;
+  }
+
+  // Helper: Format any Google Sheet URL to direct CSV export URL
+  function formatGoogleSheetCsvUrl(rawUrl) {
+    if (!rawUrl) return '';
+    const url = rawUrl.trim();
+    const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (!match) return url;
+    const docId = match[1];
+
+    let gid = '0';
+    const gidMatch = url.match(/[?&#]gid=([0-9]+)/);
+    if (gidMatch) {
+      gid = gidMatch[1];
+    }
+    return `https://docs.google.com/spreadsheets/d/${docId}/export?format=csv&gid=${gid}`;
+  }
+
+  // Helper: RFC-4180 CSV string parser
+  function parseCsvToRows(text) {
+    const rows = [];
+    let currentRow = [];
+    let currentVal = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          currentVal += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        currentRow.push(currentVal.trim());
+        currentVal = '';
+      } else if ((char === '\r' || char === '\n') && !inQuotes) {
+        if (char === '\r' && nextChar === '\n') {
+          i++;
+        }
+        currentRow.push(currentVal.trim());
+        if (currentRow.some(col => col !== '')) {
+          rows.push(currentRow);
+        }
+        currentRow = [];
+        currentVal = '';
+      } else {
+        currentVal += char;
+      }
+    }
+    if (currentVal || currentRow.length > 0) {
+      currentRow.push(currentVal.trim());
+      if (currentRow.some(col => col !== '')) {
+        rows.push(currentRow);
+      }
+    }
+    return rows;
+  }
+
+  // Helper: Detect category & unit from material name
+  function detectMaterialCategoryAndUnit(name) {
+    const n = name.toLowerCase();
+    let category = 'other';
+    let unit = 'หน่วย';
+
+    if (n.includes('ไม้')) {
+      category = 'wood';
+      unit = n.includes('ไม้อัด') ? 'แผ่น' : 'ท่อน';
+    } else if (n.includes('ฟองน้ำ')) {
+      category = 'foam';
+      unit = 'แผ่น';
+    } else if (n.includes('ลูกฟูก') || n.includes('บับเบิ้ล') || n.includes('ฟิล์ม') || n.includes('กล่อง') || n.includes('กระดาษ') || n.includes('แพ็ค') || n.includes('ซีล')) {
+      category = 'packaging';
+      unit = n.includes('แผ่น') ? 'แผ่น' : (n.includes('cm') ? 'cm.' : 'ม้วน');
+    } else if (n.includes('pq') || n.includes('mj') || n.includes('736') || n.includes('หนัง') || n.includes('ผ้า') || n.includes('สี')) {
+      category = 'fabric';
+      unit = 'หลา';
+    } else if (n.includes('ขา') || n.includes('น็อต') || n.includes('ตะปู') || n.includes('กาว') || n.includes('ราง') || n.includes('ล้อ')) {
+      category = 'accessory';
+      unit = 'ตัว';
+    }
+    return { category, unit };
+  }
+
+  // Update Sheet Sync Badge in Header
+  function updateSheetSyncBadge(status, text) {
+    const badge = $('sync-sheet-badge');
+    if (!badge) return;
+
+    if (status === 'syncing') {
+      badge.textContent = text || 'กำลังซิงค์ชีต...';
+      badge.className = 'hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-300';
+    } else if (status === 'success') {
+      badge.textContent = text || 'ซิงค์สำเร็จ';
+      badge.className = 'hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-300';
+    } else if (status === 'error') {
+      badge.textContent = text || 'ซิงค์ล้มเหลว';
+      badge.className = 'hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-rose-50 text-rose-700 border border-rose-300';
+    } else {
+      const lastSync = localStorage.getItem(STORAGE_BOM_LAST_SYNC_KEY);
+      if (lastSync) {
+        badge.textContent = `ซิงค์ล่าสุด: ${lastSync}`;
+        badge.className = 'hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200';
+      } else {
+        badge.textContent = 'พร้อมซิงค์ชีต';
+        badge.className = 'hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200';
+      }
+    }
+  }
+
+  // Helper: Toggle spin animation on sync icons
+  function setSyncSpinning(isSpinning) {
+    const iconHeader = $('sync-sheet-icon');
+    const iconModal = $('modal-sync-btn-icon');
+    const tabBtn = $('btn-sync-bom-sheet');
+    const iconTab = tabBtn ? tabBtn.querySelector('.sync-icon') : null;
+
+    [iconHeader, iconModal, iconTab].forEach(el => {
+      if (el) {
+        if (isSpinning) el.classList.add('spin-icon');
+        else el.classList.remove('spin-icon');
+      }
+    });
+  }
+
+  // Update Catalog count info and badge
+  function updateCatalogCount(count) {
+    const info = $('catalog-count-info');
+    if (info) {
+      info.textContent = `แสดงทั้งหมด ${count} รุ่น`;
+    }
+    const badge = $('badge-tab-catalog-count');
+    if (badge) {
+      badge.textContent = state.masterBomData ? state.masterBomData.skus.length : count;
+    }
+  }
+
+  // Live Sync Master BOM from Google Sheet
+  async function syncMasterBomFromGoogleSheet(isSilent = false) {
+    const rawUrl = localStorage.getItem(STORAGE_BOM_SHEET_URL_KEY) || DEFAULT_BOM_SHEET_URL;
+    const csvUrl = formatGoogleSheetCsvUrl(rawUrl);
+
+    setSyncSpinning(true);
+    updateSheetSyncBadge('syncing', 'กำลังดึงชีต...');
+    if ($('modal-sync-status-text')) {
+      $('modal-sync-status-text').textContent = 'กำลังดาวน์โหลดข้อมูล...';
+      $('modal-sync-status-text').className = 'text-amber-600 font-semibold';
+    }
+
+    try {
+      const resp = await fetch(csvUrl, { cache: 'no-cache' });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status} ไม่สามารถเปิดไฟล์ได้`);
+      }
+      const text = await resp.text();
+      const rows = parseCsvToRows(text);
+      if (rows.length < 2) {
+        throw new Error('ชีตไม่มีข้อมูลหรือหัวตารางไม่ถูกต้อง');
+      }
+
+      const headerRow = rows[0];
+      let skuColIdx = 0;
+      for (let i = 0; i < headerRow.length; i++) {
+        const h = (headerRow[i] || '').toLowerCase().trim();
+        if (h === 'sku' || h === 'master sku' || h === 'รุ่น' || h === 'รหัสสินค้า' || h === 'name') {
+          skuColIdx = i;
+          break;
+        }
+      }
+
+      const matColumns = [];
+      const newMaterials = [];
+      const existingMatMap = {};
+      if (state.masterBomData && state.masterBomData.materials) {
+        state.masterBomData.materials.forEach(m => existingMatMap[m.name] = m);
+      }
+
+      for (let c = 0; c < headerRow.length; c++) {
+        if (c === skuColIdx) continue;
+        const matName = (headerRow[c] || '').trim();
+        if (!matName) continue;
+        matColumns.push({ colIdx: c, name: matName });
+
+        if (existingMatMap[matName]) {
+          newMaterials.push({ ...existingMatMap[matName] });
+        } else {
+          const detected = detectMaterialCategoryAndUnit(matName);
+          newMaterials.push({
+            name: matName,
+            unit: detected.unit,
+            category: detected.category
+          });
+        }
+      }
+
+      const newSkus = [];
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        const skuName = (row[skuColIdx] || '').trim();
+        if (!skuName || skuName.startsWith('#') || skuName.toLowerCase() === 'total' || skuName.toLowerCase() === 'รวม') {
+          continue;
+        }
+
+        const matObj = {};
+        for (const mc of matColumns) {
+          const rawVal = row[mc.colIdx];
+          if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+            const num = parseFloat(String(rawVal).replace(/,/g, '').trim());
+            if (!isNaN(num) && num > 0) {
+              matObj[mc.name] = Math.round(num * 10000) / 10000;
+            }
+          }
+        }
+
+        newSkus.push({
+          sku: skuName,
+          materials: matObj
+        });
+      }
+
+      if (newSkus.length === 0) {
+        throw new Error('ไม่พบรายการรุ่นสินค้าในชีต');
+      }
+
+      // Update state
+      state.masterBomData = {
+        materials: newMaterials,
+        skus: newSkus
+      };
+
+      // Ensure all materials are registered in price & stock map
+      newMaterials.forEach(m => {
+        if (state.materialPriceMap[m.name] === undefined) {
+          state.materialPriceMap[m.name] = DEFAULT_MATERIAL_PRICES[m.name] || 0;
+        }
+        if (!state.stockOnHandMap[m.name]) {
+          state.stockOnHandMap[m.name] = { currentStock: 0, wastePercent: 0 };
+        }
+      });
+
+      const now = new Date();
+      const nowStr = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      localStorage.setItem(STORAGE_BOM_LAST_SYNC_KEY, nowStr);
+      saveMasterBom(false);
+      saveMaterialPrices(false);
+
+      updateBomStatusTag(true);
+      updateSheetSyncBadge('success', `ซิงค์แล้ว ${newSkus.length} รุ่น`);
+      updateCatalogCount(newSkus.length);
+      populateMaterialSelect();
+      renderCatalog();
+      renderPricesTable();
+      recalculate();
+
+      if ($('modal-sync-status-text')) {
+        $('modal-sync-status-text').textContent = 'ซิงค์สำเร็จ';
+        $('modal-sync-status-text').className = 'text-emerald-700 font-semibold';
+        $('modal-sync-count-text').textContent = `${newSkus.length} รุ่น (${newMaterials.length} วัสดุ)`;
+        $('modal-sync-time-text').textContent = nowStr;
+      }
+
+      if (!isSilent) {
+        showToast(`✅ ซิงค์สูตร BOM สำเร็จ (${newSkus.length} รุ่น, ${newMaterials.length} วัตถุดิบ)`);
+      }
+    } catch (err) {
+      console.warn('Google Sheet sync error:', err);
+      updateSheetSyncBadge('error', 'ซิงค์ล้มเหลว');
+      if ($('modal-sync-status-text')) {
+        $('modal-sync-status-text').textContent = 'ล้มเหลว: ' + err.message;
+        $('modal-sync-status-text').className = 'text-rose-600 font-semibold';
+      }
+      if (!isSilent) {
+        alert('ไม่สามารถดึงข้อมูลจาก Google Sheet ได้: ' + (err.message || 'กรุณาตรวจสอบอินเทอร์เน็ตหรือการแชร์ชีต'));
+      }
+    } finally {
+      setSyncSpinning(false);
+    }
+  }
+
+  // Open & Close Sheet Config Modal
+  function openSheetConfigModal() {
+    const currentUrl = localStorage.getItem(STORAGE_BOM_SHEET_URL_KEY) || DEFAULT_BOM_SHEET_URL;
+    if ($('input-bom-sheet-url')) $('input-bom-sheet-url').value = currentUrl;
+    if ($('modal-sync-count-text')) $('modal-sync-count-text').textContent = `${state.masterBomData ? state.masterBomData.skus.length : 0} รุ่น`;
+    const lastSync = localStorage.getItem(STORAGE_BOM_LAST_SYNC_KEY);
+    if ($('modal-sync-time-text')) $('modal-sync-time-text').textContent = lastSync || 'ยังไม่มีการซิงค์';
+    if ($('modal-sync-status-text')) {
+      $('modal-sync-status-text').textContent = 'พร้อมซิงค์';
+      $('modal-sync-status-text').className = 'text-emerald-700 font-semibold';
+    }
+    const modal = $('modal-sheet-config');
+    if (modal) modal.classList.remove('hidden');
+  }
+
+  function closeSheetConfigModal() {
+    const modal = $('modal-sheet-config');
+    if (modal) modal.classList.add('hidden');
   }
 
   // Initialize Stock On Hand
@@ -537,13 +859,69 @@
     fileImport.addEventListener('change', handleImportBomExcel);
 
     $('btn-reset-bom').addEventListener('click', () => {
-      if (confirm('คุณต้องการรีเซ็ตสูตรทั้งหมดกลับเป็นค่าเริ่มต้นมาตรฐานโรงงาน (423 รุ่น) ใช่หรือไม่?')) {
+      const count = MASTER_BOM_DATA.skus.length;
+      if (confirm(`คุณต้องการรีเซ็ตสูตรทั้งหมดกลับเป็นค่าเริ่มต้นมาตรฐานโรงงาน (${count} รุ่น) ใช่หรือไม่?`)) {
         localStorage.removeItem(STORAGE_BOM_KEY);
         state.masterBomData = JSON.parse(JSON.stringify(MASTER_BOM_DATA));
         saveMasterBom(false);
+        updateBomStatusTag(false);
+        updateCatalogCount(state.masterBomData.skus.length);
         showToast('คืนค่าสูตรมาตรฐานโรงงานสำเร็จ', '🔄');
       }
     });
+
+    // 12.1 Google Sheet Live Sync & Config
+    const btnSyncHeader = $('btn-sync-google-sheet');
+    if (btnSyncHeader) {
+      btnSyncHeader.addEventListener('click', () => syncMasterBomFromGoogleSheet(false));
+    }
+
+    const btnSyncBomTab = $('btn-sync-bom-sheet');
+    if (btnSyncBomTab) {
+      btnSyncBomTab.addEventListener('click', () => syncMasterBomFromGoogleSheet(false));
+    }
+
+    const btnConfigBom = $('btn-config-bom-sheet');
+    if (btnConfigBom) {
+      btnConfigBom.addEventListener('click', openSheetConfigModal);
+    }
+
+    const btnCloseSheet = $('btn-close-sheet-config');
+    if (btnCloseSheet) {
+      btnCloseSheet.addEventListener('click', closeSheetConfigModal);
+    }
+
+    const btnCancelSheet = $('btn-cancel-sheet-config');
+    if (btnCancelSheet) {
+      btnCancelSheet.addEventListener('click', closeSheetConfigModal);
+    }
+
+    const btnResetUrl = $('btn-reset-sheet-url');
+    if (btnResetUrl) {
+      btnResetUrl.addEventListener('click', () => {
+        $('input-bom-sheet-url').value = DEFAULT_BOM_SHEET_URL;
+      });
+    }
+
+    const btnSaveSync = $('btn-save-sync-sheet');
+    if (btnSaveSync) {
+      btnSaveSync.addEventListener('click', async () => {
+        const val = ($('input-bom-sheet-url').value || '').trim();
+        if (!val) {
+          alert('กรุณากรอกลิงก์ Google Sheet');
+          return;
+        }
+        localStorage.setItem(STORAGE_BOM_SHEET_URL_KEY, val);
+        await syncMasterBomFromGoogleSheet(false);
+      });
+    }
+
+    const modalSheetConfig = $('modal-sheet-config');
+    if (modalSheetConfig) {
+      modalSheetConfig.addEventListener('click', e => {
+        if (e.target === modalSheetConfig) closeSheetConfigModal();
+      });
+    }
 
     // 13. Edit BOM Modal Events
     $('modal-edit-bom-close').addEventListener('click', closeEditBomModal);
@@ -1204,7 +1582,9 @@
     const filtered = state.masterBomData.skus.filter(s => {
       if (!q) return true;
       return s.sku.toLowerCase().includes(q);
-    }).slice(0, 100);
+    });
+
+    updateCatalogCount(filtered.length);
 
     tbody.innerHTML = filtered.map((s, idx) => {
       const matEntries = Object.entries(s.materials);
@@ -1859,7 +2239,11 @@
     confirmSavePlan,
     openSavedPlansModal,
     renderSavedPlansList,
-    loadSavedPlan
+    loadSavedPlan,
+    syncMasterBomFromGoogleSheet,
+    formatGoogleSheetCsvUrl,
+    openSheetConfigModal,
+    closeSheetConfigModal
   };
 
   // DOM Ready

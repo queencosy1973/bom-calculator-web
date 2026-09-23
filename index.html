@@ -36,6 +36,12 @@
           <span id="cloud-status-text">ตรวจสอบคลาวด์...</span>
         </div>
 
+        <!-- Google Sheet Sync Button & Badge -->
+        <button id="btn-sync-google-sheet" class="px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm" title="ดึงข้อมูลสูตร BOM ทั้งหมดจาก Google Sheet ทันที">
+          <span id="sync-sheet-icon">🔄</span> <span id="sync-sheet-text">ซิงค์ Google Sheet</span>
+        </button>
+        <span id="sync-sheet-badge" class="hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">พร้อมซิงค์ชีต</span>
+
         <!-- Saved Plans Modal Button -->
         <button id="btn-open-saved-plans" class="px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm">
           <span>📂 แผนสั่งซื้อที่บันทึกไว้</span>
@@ -257,7 +263,7 @@
         </button>
         <button class="tab-btn py-3 px-1 text-sm font-semibold flex items-center gap-2 whitespace-nowrap" data-tab="tab-catalog">
           <span>🔍 คลังสูตร Master BOM</span>
-          <span class="px-2 py-0.5 text-[11px] rounded-full bg-slate-100 text-slate-500">423</span>
+          <span id="badge-tab-catalog-count" class="px-2 py-0.5 text-[11px] rounded-full bg-slate-100 text-slate-700 font-mono font-semibold">423</span>
         </button>
       </nav>
     </div>
@@ -517,6 +523,17 @@
         </div>
 
         <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+          <!-- Sync from Google Sheet Button -->
+          <button id="btn-sync-bom-sheet" class="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer" title="ดึงสูตร BOM ล่าสุดจาก Google Sheet ทันที">
+            <span class="sync-icon">🔄</span>
+            <span>ซิงค์จาก Google Sheet</span>
+          </button>
+
+          <!-- Config Google Sheet URL Button -->
+          <button id="btn-config-bom-sheet" class="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition-colors flex items-center gap-1 cursor-pointer" title="ตั้งค่าหรือตรวจสอบลิงก์ Google Sheet">
+            ⚙️ <span>ลิงก์ชีต</span>
+          </button>
+
           <!-- Add New SKU Button -->
           <button id="btn-add-new-sku" class="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -547,9 +564,10 @@
             คืนค่าเริ่มต้น
           </button>
 
-          <!-- Search Box -->
-          <div class="w-full sm:w-48">
-            <input type="text" id="catalog-search" placeholder="ค้นหารุ่น..." class="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          <!-- Search Box & Count -->
+          <div class="flex items-center gap-2 w-full sm:w-auto">
+            <input type="text" id="catalog-search" placeholder="ค้นหารุ่น..." class="w-full sm:w-48 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
+            <span id="catalog-count-info" class="text-xs text-slate-500 font-medium whitespace-nowrap">แสดงทั้งหมด 423 รุ่น</span>
           </div>
         </div>
       </div>
@@ -768,6 +786,53 @@
     </div>
   </div>
 
+  <!-- Modal for Google Sheet Configuration -->
+  <div id="modal-sheet-config" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-lg w-full flex flex-col shadow-2xl overflow-hidden animate-fade-in">
+      <div class="p-4 border-b border-slate-200 flex items-center justify-between bg-emerald-50/50">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">📊</span>
+          <div>
+            <h3 class="font-bold text-sm text-slate-900">ตั้งค่าเชื่อมต่อ Google Sheet (สูตร BOM)</h3>
+            <p class="text-[11px] text-slate-500">ดึงข้อมูลสูตร BOM จากแท็บ stock ใน Google Sheet อัตโนมัติ</p>
+          </div>
+        </div>
+        <button id="btn-close-sheet-config" class="text-slate-400 hover:text-slate-600 text-lg font-bold p-1 cursor-pointer">&times;</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">ลิงก์ Google Sheet (URL พร้อม gid ของแท็บสูตร BOM):</label>
+          <input type="text" id="input-bom-sheet-url" class="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none" placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=1603986714">
+          <p class="text-[11px] text-slate-400 mt-1">ค่าเริ่มต้น: Google Sheet แท็บ stock (gid=1603986714)</p>
+        </div>
+        <div id="sheet-sync-detail-box" class="bg-slate-50 rounded-xl p-3 border border-slate-200 text-xs space-y-1">
+          <div class="flex justify-between text-slate-600">
+            <span>สถานะล่าสุด:</span>
+            <strong id="modal-sync-status-text" class="text-emerald-700 font-semibold">พร้อมซิงค์</strong>
+          </div>
+          <div class="flex justify-between text-slate-600">
+            <span>จำนวนรุ่นในระบบปัจจุบัน:</span>
+            <strong id="modal-sync-count-text" class="text-slate-800 font-mono">423 รุ่น</strong>
+          </div>
+          <div class="flex justify-between text-slate-600">
+            <span>ซิงค์ล่าสุดเมื่อ:</span>
+            <span id="modal-sync-time-text" class="text-slate-500">-</span>
+          </div>
+        </div>
+      </div>
+      <div class="p-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+        <button id="btn-reset-sheet-url" class="text-xs text-rose-600 hover:underline cursor-pointer">คืนค่าลิงก์เริ่มต้น</button>
+        <div class="flex items-center gap-2">
+          <button id="btn-cancel-sheet-config" class="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer">ยกเลิก</button>
+          <button id="btn-save-sync-sheet" class="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer">
+            <span id="modal-sync-btn-icon">🔄</span>
+            <span>บันทึก & ซิงค์ทันที</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div id="toast" class="hidden fixed bottom-5 right-5 z-50 bg-slate-900 text-white text-xs font-medium py-2.5 px-4 rounded-xl shadow-xl flex items-center gap-2 border border-slate-700 transition-all">
     <span id="toast-icon">💾</span>
@@ -776,13 +841,13 @@
 
   <!-- Scripts -->
   <script src="xlsx.full.min.js"></script>
-  <script src="master-bom-data.js"></script>
-  <script src="sku-mapper.js?v=2.3"></script>
-  <script src="bom-calculator.js?v=2.3"></script>
-  <script src="template-export.js?v=2.3"></script>
+  <script src="master-bom-data.js?v=2.4"></script>
+  <script src="sku-mapper.js?v=2.4"></script>
+  <script src="bom-calculator.js?v=2.4"></script>
+  <script src="template-export.js?v=2.4"></script>
   <!-- Supabase JS Client & Database Service -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="db-service.js?v=2.3"></script>
-  <script src="app.js?v=2.3"></script>
+  <script src="db-service.js?v=2.4"></script>
+  <script src="app.js?v=2.4"></script>
 </body>
 </html>
