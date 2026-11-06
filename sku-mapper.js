@@ -123,7 +123,9 @@
 
     // 4. Model extraction
     let rawModel = '';
-    if (/หมอน/.test(p) || /หมอน/.test(s)) {
+    if (/แขนโซฟา/.test(p) || /แขนโซฟา/.test(s)) {
+      rawModel = 'แขนโซฟา';
+    } else if (/หมอน/.test(p) || /หมอน/.test(s)) {
       if (isCorduroy) rawModel = 'plcf';
       else if (isHolland) rawModel = 'plh';
       else if (is736b) rawModel = 'pln';

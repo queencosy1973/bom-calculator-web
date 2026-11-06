@@ -11,7 +11,7 @@
   const STORAGE_PRICES_KEY = 'qc_material_prices_v2';
 
   // Google Sheet Direct Sync Defaults (stock tab gid=1603986714)
-  const DEFAULT_BOM_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1BrjQw-L9GNbYPd1GhPRSKMugFAVE0BL0JMgxooTC4aE/edit?gid=1603986714#gid=1603986714';
+  const DEFAULT_BOM_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1gss0vjL2Ts5EI6hgDlzAdIXQa5o98JlBt98FCEZhnmo/edit?gid=1603986714#gid=1603986714';
   const STORAGE_BOM_SHEET_URL_KEY = 'qc_bom_google_sheet_url';
   const STORAGE_BOM_LAST_SYNC_KEY = 'qc_bom_last_sync';
 
@@ -143,9 +143,13 @@
 
   // Load Master BOM (Local Storage or Baseline)
   function loadMasterBom() {
-    const BOM_CACHE_VER = '20260923_v3';
+    const BOM_CACHE_VER = '20261106_v5';
     if (localStorage.getItem('qc_bom_cache_ver') !== BOM_CACHE_VER) {
       localStorage.removeItem(STORAGE_BOM_KEY);
+      const savedUrl = localStorage.getItem(STORAGE_BOM_SHEET_URL_KEY);
+      if (savedUrl && savedUrl.includes('1BrjQw-L9GNbYPd1GhPRSKMugFAVE0BL0JMgxooTC4aE')) {
+        localStorage.removeItem(STORAGE_BOM_SHEET_URL_KEY);
+      }
       localStorage.setItem('qc_bom_cache_ver', BOM_CACHE_VER);
     }
 
@@ -410,6 +414,17 @@
           }
         }
 
+        // Apply lu3 = bs3 rule on live sync if sheet still has legacy 7.00
+        if (/-lu3-/i.test(skuName)) {
+          for (const k of Object.keys(matObj)) {
+            if ((k.includes('PQ002C') || k.includes('MJ337')) && matObj[k] === 7) {
+              matObj[k] = 6.26;
+              matObj["ไม้ 2 นิ้ว 1.5 เมตร (ท่อน)"] = 8;
+              matObj["ฟองน้ำ 2 นิ้ว ที่นั่ง (PM7)"] = 0.3;
+              matObj["ฟองน้ำ 2 นิ้ว หลังพิง (PM103)"] = 0.34;
+            }
+          }
+        }
         newSkus.push({
           sku: skuName,
           materials: matObj
