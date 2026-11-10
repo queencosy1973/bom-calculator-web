@@ -158,7 +158,7 @@
 
   // Match an individual item to Master SKU
   function mapToMasterSku(rawSku, productName, variation) {
-    const sRaw = cleanStr(rawSku);
+    const sRaw = cleanStr(rawSku).replace(/-+/g, '-');
     const sName = cleanStr(productName);
     const sVar = cleanStr(variation);
 
@@ -237,7 +237,9 @@
       // Check lowercase / trimmed key
       for (const k of Object.keys(row)) {
         if (k.trim().toLowerCase() === h.trim().toLowerCase()) {
-          return String(row[k]).trim();
+          if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+            return String(row[k]).trim();
+          }
         }
       }
     }
@@ -261,7 +263,17 @@
     let totalInputRows = 0;
     let cancelledCount = 0;
 
+    let stoppedAtSummaryTable = false;
     dataRows.forEach((row, idx) => {
+      if (stoppedAtSummaryTable) return;
+
+      // Detect if a secondary summary table starts below the main table in the same sheet
+      const allVals = Object.values(row).map(v => String(v || '').trim());
+      if (allVals.some(v => v.includes('ผ้าม้วนที่ใช้รวมทั้งหมด') || v === 'หมวดหมู่วัสดุ' || v === 'รายการวัสดุที่ใช้' || v === 'สถานะการเบิก')) {
+        stoppedAtSummaryTable = true;
+        return;
+      }
+
       // Check status if ecommerce order
       const status = findColVal(row, [
         'Order Status', 'สถานะคำสั่งซื้อ', 'สถานะการสั่งซื้อ', 'สถานะ', 'Status', 'สถานะการคืนเงินหรือคืนสินค้า'
@@ -285,13 +297,24 @@
       ]);
       const pName = findColVal(row, ['Product Name', 'ชื่อสินค้า', 'สินค้า', 'ชื่อสินค้าหลัก']);
       const pVar = findColVal(row, ['ชื่อตัวเลือก', 'Variation', 'ตัวเลือกสินค้า', 'ตัวเลือก', 'สี']);
+
+      // Skip blank rows or summary rows (e.g. ,,464, where SKU and Product Name are empty)
+      if (!rawSku && !pName && !pVar) {
+        return;
+      }
+
       const dateVal = findColVal(row, ['วันที่ทำการสั่งซื้อ', 'เวลาการชำระสินค้า', 'วันที่', 'Date', 'Created Time', 'เวลาสร้าง']);
       const orderId = findColVal(row, ['Order ID', 'หมายเลขคำสั่งซื้อ', 'Order Number', 'เลขที่คำสั่งซื้อ', 'Order No.']);
       const trackingId = findColVal(row, ['*หมายเลขติดตามพัสดุ', 'หมายเลขติดตามพัสดุ', 'Tracking ID', 'เลขพัสดุ', 'Tracking Number', 'Tracking No']);
 
       let qtyStr = findColVal(row, ['จำนวนที่ผลิต', 'จำนวน', 'Quantity', 'Qty']);
-      let qty = parseInt(qtyStr, 10);
-      if (isNaN(qty) || qty <= 0) qty = 1;
+      let qty;
+      if (qtyStr !== '') {
+        const parsed = parseFloat(String(qtyStr).replace(/,/g, ''));
+        qty = (isNaN(parsed) || parsed < 0) ? 0 : Math.round(parsed);
+      } else {
+        qty = isOrderAll ? 1 : 0;
+      }
 
       totalInputRows++;
 
@@ -310,22 +333,25 @@
         }
         const cur = itemsMap.get(skuKey);
         cur.quantity += qty;
-        cur.orderCount += 1;
-        if (dateVal) cur.dates.add(dateVal);
-        cur.detailedOrders.push({
-          sku: skuKey,
-          rawSku,
-          productName: pName,
-          variation: pVar,
-          qty,
-          orderId: orderId || '',
-          trackingId: trackingId || '',
-          date: dateVal || ''
-        });
+        if (qty > 0) {
+          cur.orderCount += 1;
+          if (dateVal) cur.dates.add(dateVal);
+          cur.detailedOrders.push({
+            sku: skuKey,
+            rawSku,
+            productName: pName,
+            variation: pVar,
+            qty,
+            orderId: orderId || '',
+            trackingId: trackingId || '',
+            date: dateVal || ''
+          });
+        }
         if (cur.originalInputs.length < 5) {
           cur.originalInputs.push({ rawSku, pName, pVar, qty, orderId, trackingId });
         }
       } else {
+        // Only report unmatched if qty > 0 or if it's an actual SKU name
         unmatched.push({
           rowNumber: idx + 2,
           rawSku,
@@ -346,14 +372,19 @@
       detailedOrders: item.detailedOrders || []
     }));
 
+    const activeSkusCount = plannedItems.filter(x => x.quantity > 0).length;
+    const zeroQtySkusCount = plannedItems.filter(x => x.quantity <= 0).length;
+
     return {
       success: true,
       fileType: isOrderAll ? 'E-Commerce Order All' : 'Production Plan Template',
       totalInputRows,
       cancelledCount,
       plannedItems,
-      totalUnits: plannedItems.reduce((sum, x) => sum + x.quantity, 0),
-      matchedSkusCount: plannedItems.length,
+      totalUnits: plannedItems.reduce((sum, x) => sum + (Number(x.quantity) || 0), 0),
+      matchedSkusCount: activeSkusCount,
+      totalListedSkusCount: plannedItems.length,
+      zeroQtySkusCount,
       unmatchedCount: unmatched.length,
       unmatched
     };

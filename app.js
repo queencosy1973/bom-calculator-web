@@ -79,6 +79,7 @@
     activeCategory: 'all',
     priceActiveCategory: 'all',
     planSearchQuery: '',
+    planHideZero: false,
     catalogSearchQuery: '',
     priceSearchQuery: '',
     unmatchedList: [],
@@ -143,7 +144,7 @@
 
   // Load Master BOM (Local Storage or Baseline)
   function loadMasterBom() {
-    const BOM_CACHE_VER = '20261106_v5';
+    const BOM_CACHE_VER = '20261110_v6';
     if (localStorage.getItem('qc_bom_cache_ver') !== BOM_CACHE_VER) {
       localStorage.removeItem(STORAGE_BOM_KEY);
       const savedUrl = localStorage.getItem(STORAGE_BOM_SHEET_URL_KEY);
@@ -842,6 +843,14 @@
       renderPlanTable();
     });
 
+    const btnToggleZero = $('btn-toggle-zero-plan');
+    if (btnToggleZero) {
+      btnToggleZero.addEventListener('click', () => {
+        state.planHideZero = !state.planHideZero;
+        renderPlanTable();
+      });
+    }
+
     const pricesSearch = $('prices-search');
     if (pricesSearch) {
       pricesSearch.addEventListener('input', e => {
@@ -1019,7 +1028,8 @@
       $('file-status-banner').classList.remove('hidden');
       $('banner-file-name').textContent = file.name;
       $('banner-file-type').textContent = parseResult.fileType;
-      $('banner-file-stats').textContent = `นำเข้าสำเร็จ ${parseResult.totalUnits} ชิ้น (${parseResult.matchedSkusCount} รุ่น) | ออเดอร์ทั้งหมด ${parseResult.totalInputRows} แถว (คัดกรองยกเลิกออก ${parseResult.cancelledCount} รายการ)`;
+      const zeroText = parseResult.zeroQtySkusCount > 0 ? ` (ข้ามรุ่นที่จำนวนเป็น 0 จำนวน ${parseResult.zeroQtySkusCount} รุ่น)` : '';
+      $('banner-file-stats').textContent = `นำเข้าสำเร็จ ${parseResult.totalUnits} ชิ้น (สั่งผลิตจริง ${parseResult.matchedSkusCount} รุ่น จากทั้งหมด ${parseResult.totalListedSkusCount || parseResult.matchedSkusCount} รุ่น${zeroText})`;
 
       if (parseResult.unmatchedCount > 0) {
         $('banner-unmatched-wrapper').classList.remove('hidden');
@@ -1271,6 +1281,27 @@
   function renderPlanTable() {
     const tbody = $('table-plan-body');
     const tfoot = $('table-plan-tfoot');
+    const btnToggleZero = $('btn-toggle-zero-plan');
+
+    const totalAllCount = state.plannedItems ? state.plannedItems.length : 0;
+    const activeCount = state.plannedItems ? state.plannedItems.filter(i => (Number(i.quantity) || 0) > 0).length : 0;
+    const zeroCount = totalAllCount - activeCount;
+
+    if (btnToggleZero) {
+      if (zeroCount > 0) {
+        btnToggleZero.classList.remove('hidden');
+        if (state.planHideZero) {
+          btnToggleZero.innerHTML = `<span>📋 แสดงทั้งหมด (${totalAllCount} รุ่น)</span>`;
+          btnToggleZero.className = 'px-2.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1';
+        } else {
+          btnToggleZero.innerHTML = `<span>👁️ ซ่อนรุ่นที่เป็น 0 (${zeroCount} รุ่น)</span>`;
+          btnToggleZero.className = 'px-2.5 py-1.5 text-xs font-semibold text-slate-600 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1';
+        }
+      } else {
+        btnToggleZero.classList.add('hidden');
+      }
+    }
+
     if (!state.plannedItems || state.plannedItems.length === 0) {
       tbody.innerHTML = `
         <tr>
@@ -1287,37 +1318,50 @@
     }
 
     const filtered = state.plannedItems.filter(item => {
+      if (state.planHideZero && (Number(item.quantity) || 0) <= 0) return false;
       if (!state.planSearchQuery) return true;
       return item.sku.toLowerCase().includes(state.planSearchQuery);
     });
 
-    tbody.innerHTML = filtered.map((item, idx) => `
-      <tr class="hover:bg-slate-50/80 transition-colors">
-        <td class="py-3 px-4 text-center text-slate-400 font-mono">${idx + 1}</td>
-        <td class="py-3 px-4 font-semibold text-slate-900">${item.sku}</td>
-        <td class="py-3 px-4 text-center">
-          <input type="number" min="1" value="${item.quantity}" data-sku="${item.sku}" class="plan-qty-input w-20 py-1 px-2 text-center text-xs font-bold border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none">
-        </td>
-        <td class="py-3 px-4 text-right text-slate-700 font-medium">${window.BomCalculator.formatMoney(item.unitCost)} ฿</td>
-        <td class="py-3 px-4 text-right font-bold text-slate-900">${window.BomCalculator.formatMoney(item.totalCost)} ฿</td>
-        <td class="py-3 px-4 text-slate-500 font-mono text-[11px]">${item.date || '-'}</td>
-        <td class="py-3 px-4 text-center">
-          <button data-sku="${item.sku}" class="btn-delete-plan-item text-rose-500 hover:text-rose-700 p-1 rounded hover:bg-rose-50 transition-colors" title="ลบรายการ">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-            </svg>
-          </button>
-        </td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = filtered.map((item, idx) => {
+      const qty = Number(item.quantity) || 0;
+      const isZero = qty <= 0;
+      const rowClass = isZero ? 'bg-slate-50/40 text-slate-400 hover:bg-slate-50 transition-colors' : 'bg-white hover:bg-blue-50/30 transition-colors';
+      const skuClass = isZero ? 'font-medium text-slate-400' : 'font-semibold text-slate-900';
+      const inputClass = isZero
+        ? 'plan-qty-input w-20 py-1 px-2 text-center text-xs font-medium text-slate-400 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:text-slate-900 focus:bg-white focus:outline-none'
+        : 'plan-qty-input w-20 py-1 px-2 text-center text-xs font-bold text-blue-800 bg-blue-50/40 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white focus:outline-none';
+      const totalCostClass = isZero ? 'text-slate-400 font-normal' : 'font-bold text-slate-900';
+
+      return `
+        <tr class="${rowClass}">
+          <td class="py-3 px-4 text-center text-slate-400 font-mono">${idx + 1}</td>
+          <td class="py-3 px-4 ${skuClass}">${item.sku}</td>
+          <td class="py-3 px-4 text-center">
+            <input type="number" min="0" value="${qty}" data-sku="${item.sku}" class="${inputClass}">
+          </td>
+          <td class="py-3 px-4 text-right text-slate-600 font-medium">${window.BomCalculator.formatMoney(item.unitCost)} ฿</td>
+          <td class="py-3 px-4 text-right ${totalCostClass}">${window.BomCalculator.formatMoney(item.totalCost)} ฿</td>
+          <td class="py-3 px-4 text-slate-500 font-mono text-[11px]">${item.date || '-'}</td>
+          <td class="py-3 px-4 text-center">
+            <button data-sku="${item.sku}" class="btn-delete-plan-item text-rose-500 hover:text-rose-700 p-1 rounded hover:bg-rose-50 transition-colors" title="ลบรายการ">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+              </svg>
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
 
     // Plan table footer
     if (tfoot) {
       const totalUnits = state.plannedItems.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0);
       const totalCost = state.plannedItems.reduce((acc, i) => acc + (Number(i.totalCost) || 0), 0);
+      const subLabel = zeroCount > 0 ? `สั่งผลิตจริง ${activeCount} รุ่น (จากทั้งหมด ${totalAllCount} รุ่น)` : `รวมทั้งหมด (${activeCount} รุ่น)`;
       tfoot.innerHTML = `
         <tr class="bg-slate-100/80 text-slate-800">
-          <td colspan="2" class="py-3 px-4 font-bold text-slate-900">รวมทั้งหมด (${state.plannedItems.length} รุ่น)</td>
+          <td colspan="2" class="py-3 px-4 font-bold text-slate-900">${subLabel}</td>
           <td class="py-3 px-4 text-center font-black text-blue-700">${window.BomCalculator.formatNum(totalUnits, 0)} ตัว</td>
           <td class="py-3 px-4 text-right text-slate-500">-</td>
           <td class="py-3 px-4 text-right font-black text-blue-700 text-sm">${window.BomCalculator.formatMoney(totalCost)} ฿</td>
@@ -1330,12 +1374,11 @@
       input.addEventListener('change', () => {
         const targetSku = input.getAttribute('data-sku');
         const val = parseInt(input.value, 10);
-        if (!isNaN(val) && val > 0) {
-          const item = state.plannedItems.find(p => p.sku === targetSku);
-          if (item) {
-            item.quantity = val;
-            recalculate();
-          }
+        const cleanVal = (isNaN(val) || val < 0) ? 0 : val;
+        const item = state.plannedItems.find(p => p.sku === targetSku);
+        if (item) {
+          item.quantity = cleanVal;
+          recalculate();
         }
       });
     });

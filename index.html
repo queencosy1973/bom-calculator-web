@@ -277,6 +277,7 @@
             <p class="text-xs text-slate-500">คำนวณต้นทุนวัตถุดิบต่อตัวและต้นทุนรวมให้อัตโนมัติ สามารถปรับจำนวนชิ้นได้โดยตรง</p>
           </div>
           <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <button id="btn-toggle-zero-plan" class="hidden px-2.5 py-1.5 text-xs font-semibold text-slate-600 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1"><span>👁️ ซ่อนรุ่นที่เป็น 0</span></button>
             <input type="text" id="filter-plan-search" placeholder="ค้นหาในตาราง..." class="px-3 py-1.5 text-xs border border-slate-300 rounded-lg w-full sm:w-44 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
             <button id="btn-save-plan-modal" class="px-3 py-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -841,13 +842,13 @@
 
   <!-- Scripts -->
   <script src="xlsx.full.min.js"></script>
-  <script src="master-bom-data.js?v=2.6"></script>
-  <script src="sku-mapper.js?v=2.6"></script>
-  <script src="bom-calculator.js?v=2.6"></script>
-  <script src="template-export.js?v=2.6"></script>
+  <script src="master-bom-data.js?v=2.7"></script>
+  <script src="sku-mapper.js?v=2.7"></script>
+  <script src="bom-calculator.js?v=2.7"></script>
+  <script src="template-export.js?v=2.7"></script>
   <!-- Supabase JS Client & Database Service -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="db-service.js?v=2.6"></script>
-  <script src="app.js?v=2.6"></script>
+  <script src="db-service.js?v=2.7"></script>
+  <script src="app.js?v=2.7"></script>
 </body>
 </html>

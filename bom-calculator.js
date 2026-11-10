@@ -82,11 +82,12 @@
       const consumingProducts = [];
 
       plannedItems.forEach(item => {
+        const qty = Number(item.quantity) || 0;
+        if (qty <= 0) return;
         const skuKey = item.sku.trim().toLowerCase();
         const materials = skuBomMap.get(skuKey);
         if (materials && materials[matName] !== undefined && materials[matName] > 0) {
           const perUnit = Number(materials[matName]) || 0;
-          const qty = Number(item.quantity) || 0;
           const subTotal = qty * perUnit;
           totalUsed += subTotal;
 
@@ -171,7 +172,8 @@
 
     return {
       totalItemsPlanned,
-      uniqueSkusCount: plannedItems.length,
+      uniqueSkusCount: plannedItems.filter(i => (Number(i.quantity) || 0) > 0).length,
+      totalListedSkusCount: plannedItems.length,
       activeMaterialsCount,
       shortageCount,
       totalMaterialCost,
